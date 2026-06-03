@@ -4,15 +4,12 @@
     "@mariozechner/pi-ai": "npm:@mariozechner/pi-ai@0.64.0",
     "@mariozechner/pi-agent-core": "npm:@mariozechner/pi-agent-core@0.64.0",
     "@mariozechner/pi-ai/oauth": "npm:/@mariozechner/pi-ai@0.64.0/oauth",
-    "@sinclair/typebox": "npm:@sinclair/typebox@0.34.33"
+    "@std/encoding": "jsr:@std/encoding@^1",
+    "fast-png": "npm:fast-png@^8",
+    "zod": "npm:zod@^4"
   },
   "tasks": {
-    "dev": "deno run -A --watch main.ts",
-    "start": "deno run -A main.ts",
-    "ui": "deno run -A bundle-ui.ts"
-  },
-  "compilerOptions": {
-    "jsx": "react-jsx",
-    "jsxImportSource": "https://esm.sh/preact@10.27.2"
+    "dev": "deno run -A --watch main.tsx",
+    "start": "deno run -A main.tsx"
   }
 }
