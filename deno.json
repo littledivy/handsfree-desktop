@@ -8,6 +8,11 @@
   },
   "tasks": {
     "dev": "deno run -A --watch main.ts",
-    "start": "deno run -A main.ts"
+    "start": "deno run -A main.ts",
+    "ui": "deno run -A bundle-ui.ts"
+  },
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "https://esm.sh/preact@10.27.2"
   }
 }

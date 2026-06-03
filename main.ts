@@ -1,12 +1,14 @@
-// codex-demo — a Codex-like desktop app: chat UI + hands-free macOS computer use.
+// codex-demo — a Codex-like desktop app: chat UI + hands-free computer use.
 // Brain: OpenAI Codex (via pi-ai OAuth, using your ~/.codex creds).
-// Loop: @mariozechner/pi-agent-core. UI: served HTML + SSE, shown in a
-// Deno.BrowserWindow (CEF) when run via `deno desktop`, else a normal browser.
+// Loop: @mariozechner/pi-agent-core. Computer use: Deno FFI (no helper binary).
+// UI: Preact (ui.tsx). Desktop (`deno desktop`) talks to the runtime via
+// BrowserWindow bindings; in the browser it falls back to SSE + fetch.
 import { Agent } from "@mariozechner/pi-agent-core";
 import { getModel } from "@mariozechner/pi-ai";
 import { refreshOpenAICodexToken } from "@mariozechner/pi-ai/oauth";
 import { Type } from "@sinclair/typebox";
 import { encodeBase64 } from "jsr:@std/encoding/base64";
+import { encode as encodePng } from "npm:fast-png";
 
 const HOME = (Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"))!;
 const MODEL_ID = Deno.env.get("CODEX_MODEL") ?? "gpt-5.4";
@@ -54,47 +56,208 @@ async function codexApiKey() {
 }
 
 // ---------------------------------------------------------------------------
-// macOS computer-use helpers (macctl = CGEvent helper, screencapture for vision)
+// Computer use via Deno FFI — no native helper binary.
+//   macOS: CoreGraphics (CGEvent) for input, `screencapture` for vision.
+//   Windows: user32 SendInput for input, gdi32 BitBlt + fast-png for capture.
+// Run with --allow-ffi (covered by -A).
 // ---------------------------------------------------------------------------
-// macctl is exec'd, so it needs a real filesystem path. In a compiled bundle
-// the `--include`d copy lives in the embedded FS (not executable), so extract
-// it to a temp file. Works the same in dev (reads the real binary).
 const IS_WIN = Deno.build.os === "windows";
-const HELPER = await (async () => {
-  const override = Deno.env.get("CTL_BIN");
-  if (override) return override;
-  const name = IS_WIN ? "winctl.exe" : "macctl";
-  const bytes = await Deno.readFile(new URL("./" + name, import.meta.url));
-  const tmp = await Deno.makeTempFile({ prefix: "ctl-", suffix: IS_WIN ? ".exe" : "" });
-  await Deno.writeFile(tmp, bytes);
-  if (!IS_WIN) await Deno.chmod(tmp, 0o755);
-  return tmp;
-})();
-async function ctl(...args: string[]) {
-  const { success, stdout, stderr } = await new Deno.Command(HELPER, { args }).output();
-  if (!success) throw new Error(`ctl ${args[0]} failed: ${new TextDecoder().decode(stderr)}`);
-  return new TextDecoder().decode(stdout).trim();
-}
-const [SCREEN_W, SCREEN_H] = (await ctl("screensize")).split(/\s+/).map(Number);
 
-// Capture the screen as a base64 PNG. Screenshot pixels == the coordinate
-// space click/move use. macOS: screencapture + sips downscale to points.
-// Windows: winctl captures the primary screen (DPI-aware physical pixels).
-async function screenshot(): Promise<string> {
-  const out = await Deno.makeTempFile({ suffix: ".png" });
-  if (IS_WIN) {
-    await ctl("screenshot", out);
-  } else {
+let SCREEN_W = 0, SCREEN_H = 0;
+let moveMouse: (x: number, y: number) => void;
+let clickMouse: (x: number, y: number, double: boolean, right: boolean) => void;
+let scrollMouse: (dx: number, dy: number) => void;
+let typeText: (s: string) => void;
+let pressCombo: (combo: string) => void;
+let capturePng: () => Promise<Uint8Array>;
+
+if (IS_WIN) {
+  const u = Deno.dlopen("user32.dll", {
+    SendInput: { parameters: ["u32", "buffer", "i32"], result: "u32" },
+    SetCursorPos: { parameters: ["i32", "i32"], result: "bool" },
+    GetSystemMetrics: { parameters: ["i32"], result: "i32" },
+    SetProcessDPIAware: { parameters: [], result: "bool" },
+    VkKeyScanW: { parameters: ["u16"], result: "i16" },
+    GetDC: { parameters: ["pointer"], result: "pointer" },
+    ReleaseDC: { parameters: ["pointer", "pointer"], result: "i32" },
+  } as const);
+  const g = Deno.dlopen("gdi32.dll", {
+    CreateCompatibleDC: { parameters: ["pointer"], result: "pointer" },
+    CreateCompatibleBitmap: { parameters: ["pointer", "i32", "i32"], result: "pointer" },
+    SelectObject: { parameters: ["pointer", "pointer"], result: "pointer" },
+    BitBlt: { parameters: ["pointer", "i32", "i32", "i32", "i32", "pointer", "i32", "i32", "u32"], result: "bool" },
+    GetDIBits: { parameters: ["pointer", "pointer", "u32", "u32", "buffer", "buffer", "u32"], result: "i32" },
+    DeleteObject: { parameters: ["pointer"], result: "bool" },
+    DeleteDC: { parameters: ["pointer"], result: "bool" },
+  } as const);
+
+  u.symbols.SetProcessDPIAware();
+  SCREEN_W = u.symbols.GetSystemMetrics(0);
+  SCREEN_H = u.symbols.GetSystemMetrics(1);
+
+  const send = (...inputs: Uint8Array[]) => {
+    const buf = new Uint8Array(40 * inputs.length);
+    inputs.forEach((b, i) => buf.set(b, i * 40));
+    u.symbols.SendInput(inputs.length, buf, 40);
+  };
+  const mi = (dx: number, dy: number, data: number, flags: number) => {
+    const b = new Uint8Array(40), v = new DataView(b.buffer);
+    v.setUint32(0, 0, true); v.setInt32(8, dx, true); v.setInt32(12, dy, true);
+    v.setUint32(16, data >>> 0, true); v.setUint32(20, flags >>> 0, true);
+    return b;
+  };
+  const ki = (vk: number, scan: number, flags: number) => {
+    const b = new Uint8Array(40), v = new DataView(b.buffer);
+    v.setUint32(0, 1, true); v.setUint16(8, vk, true); v.setUint16(10, scan, true);
+    v.setUint32(12, flags >>> 0, true);
+    return b;
+  };
+  const ABS = 0x8000, MOVE = 1, LD = 2, LU = 4, RD = 8, RU = 0x10, WHEEL = 0x800, HWHEEL = 0x1000, KEYUP = 2, UNI = 4;
+  const abs = (x: number, sz: number) => Math.round(x * 65535 / sz);
+  moveMouse = (x, y) => { send(mi(abs(x, SCREEN_W), abs(y, SCREEN_H), 0, MOVE | ABS)); u.symbols.SetCursorPos(x, y); };
+  clickMouse = (x, y, dbl, right) => {
+    moveMouse(x, y);
+    const d = right ? RD : LD, up = right ? RU : LU;
+    send(mi(0, 0, 0, d), mi(0, 0, 0, up));
+    if (dbl) send(mi(0, 0, 0, d), mi(0, 0, 0, up));
+  };
+  scrollMouse = (dx, dy) => { if (dy) send(mi(0, 0, dy, WHEEL)); if (dx) send(mi(0, 0, dx, HWHEEL)); };
+  typeText = (s) => { for (const ch of s) { const c = ch.charCodeAt(0); send(ki(0, c, UNI), ki(0, c, UNI | KEYUP)); } };
+  const VK: Record<string, number> = {
+    return: 0x0D, enter: 0x0D, tab: 0x09, space: 0x20, escape: 0x1B, esc: 0x1B, backspace: 0x08, delete: 0x2E,
+    up: 0x26, down: 0x28, left: 0x25, right: 0x27, home: 0x24, end: 0x23, pageup: 0x21, pagedown: 0x22,
+  };
+  const vkOf = (k: string) => k in VK ? VK[k]
+    : k.length === 1 ? (u.symbols.VkKeyScanW(k.toUpperCase().charCodeAt(0)) & 0xff)
+    : /^f\d+$/.test(k) ? 0x70 + (+k.slice(1)) - 1 : 0;
+  pressCombo = (combo) => {
+    const mods: number[] = []; let key = 0;
+    for (const p of combo.toLowerCase().split("+")) {
+      if (p === "ctrl" || p === "control") mods.push(0x11);
+      else if (p === "shift") mods.push(0x10);
+      else if (p === "alt" || p === "option") mods.push(0x12);
+      else if (p === "cmd" || p === "win" || p === "meta" || p === "super") mods.push(0x5B);
+      else key = vkOf(p);
+    }
+    for (const m of mods) send(ki(m, 0, 0));
+    if (key) { send(ki(key, 0, 0)); send(ki(key, 0, KEYUP)); }
+    for (const m of mods.reverse()) send(ki(m, 0, KEYUP));
+  };
+  capturePng = () => {
+    const screen = u.symbols.GetDC(null);
+    const mem = g.symbols.CreateCompatibleDC(screen);
+    const bmp = g.symbols.CreateCompatibleBitmap(screen, SCREEN_W, SCREEN_H);
+    g.symbols.SelectObject(mem, bmp);
+    g.symbols.BitBlt(mem, 0, 0, SCREEN_W, SCREEN_H, screen, 0, 0, 0x00CC0020); // SRCCOPY
+    const bmi = new Uint8Array(40), bv = new DataView(bmi.buffer);
+    bv.setUint32(0, 40, true); bv.setInt32(4, SCREEN_W, true); bv.setInt32(8, -SCREEN_H, true);
+    bv.setUint16(12, 1, true); bv.setUint16(14, 32, true); bv.setUint32(16, 0, true);
+    const bits = new Uint8Array(SCREEN_W * SCREEN_H * 4);
+    g.symbols.GetDIBits(mem, bmp, 0, SCREEN_H, bits, bmi, 0);
+    g.symbols.DeleteObject(bmp); g.symbols.DeleteDC(mem); u.symbols.ReleaseDC(null, screen);
+    for (let i = 0; i < bits.length; i += 4) { const b = bits[i]; bits[i] = bits[i + 2]; bits[i + 2] = b; bits[i + 3] = 255; }
+    return Promise.resolve(encodePng({ width: SCREEN_W, height: SCREEN_H, data: bits, channels: 4 }));
+  };
+} else {
+  const cg = Deno.dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", {
+    CGEventSourceCreate: { parameters: ["i32"], result: "pointer" },
+    CGEventCreateMouseEvent: { parameters: ["pointer", "u32", { struct: ["f64", "f64"] }, "u32"], result: "pointer" },
+    CGEventCreateKeyboardEvent: { parameters: ["pointer", "u16", "bool"], result: "pointer" },
+    CGEventCreateScrollWheelEvent: { parameters: ["pointer", "u32", "u32", "i32", "i32"], result: "pointer" },
+    CGEventPost: { parameters: ["u32", "pointer"], result: "void" },
+    CGEventSetFlags: { parameters: ["pointer", "u64"], result: "void" },
+    CGEventSetIntegerValueField: { parameters: ["pointer", "u32", "i64"], result: "void" },
+    CGEventKeyboardSetUnicodeString: { parameters: ["pointer", "u64", "buffer"], result: "void" },
+    CGMainDisplayID: { parameters: [], result: "u32" },
+    CGDisplayPixelsWide: { parameters: ["u32"], result: "u64" },
+    CGDisplayPixelsHigh: { parameters: ["u32"], result: "u64" },
+  } as const);
+  const cf = Deno.dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", {
+    CFRelease: { parameters: ["pointer"], result: "void" },
+  } as const);
+
+  const src = cg.symbols.CGEventSourceCreate(1);
+  const HID = 0;
+  const pt = (x: number, y: number) => new Uint8Array(new Float64Array([x, y]).buffer);
+  // deno-lint-ignore no-explicit-any
+  const post = (ev: any) => { if (ev) { cg.symbols.CGEventPost(HID, ev); cf.symbols.CFRelease(ev); } };
+
+  const dsp = cg.symbols.CGMainDisplayID();
+  SCREEN_W = Number(cg.symbols.CGDisplayPixelsWide(dsp));
+  SCREEN_H = Number(cg.symbols.CGDisplayPixelsHigh(dsp));
+
+  moveMouse = (x, y) => post(cg.symbols.CGEventCreateMouseEvent(src, 5, pt(x, y), 0));
+  clickMouse = (x, y, dbl, right) => {
+    const btn = right ? 1 : 0, down = right ? 3 : 1, up = right ? 4 : 2;
+    const one = (cc: number) => {
+      const d = cg.symbols.CGEventCreateMouseEvent(src, down, pt(x, y), btn);
+      cg.symbols.CGEventSetIntegerValueField(d, 1, BigInt(cc)); post(d);
+      const u2 = cg.symbols.CGEventCreateMouseEvent(src, up, pt(x, y), btn);
+      cg.symbols.CGEventSetIntegerValueField(u2, 1, BigInt(cc)); post(u2);
+    };
+    one(1); if (dbl) one(2);
+  };
+  scrollMouse = (dx, dy) => post(cg.symbols.CGEventCreateScrollWheelEvent(src, 0, 2, dy, dx));
+  typeText = (s) => {
+    for (const ch of s) {
+      const buf = new Uint8Array(new Uint16Array([...ch].map((c) => c.charCodeAt(0))).buffer);
+      const len = BigInt(buf.byteLength / 2);
+      const d = cg.symbols.CGEventCreateKeyboardEvent(src, 0, true);
+      cg.symbols.CGEventKeyboardSetUnicodeString(d, len, buf); post(d);
+      const up = cg.symbols.CGEventCreateKeyboardEvent(src, 0, false);
+      cg.symbols.CGEventKeyboardSetUnicodeString(up, len, buf); post(up);
+    }
+  };
+  const KC: Record<string, number> = {
+    return: 36, enter: 36, tab: 48, space: 49, delete: 51, escape: 53, esc: 53,
+    left: 123, right: 124, down: 125, up: 126,
+    a: 0, s: 1, d: 2, f: 3, h: 4, g: 5, z: 6, x: 7, c: 8, v: 9, b: 11, q: 12, w: 13, e: 14, r: 15,
+    y: 16, t: 17, o: 31, u: 32, i: 34, p: 35, l: 37, j: 38, k: 40, n: 45, m: 46,
+    "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25, "0": 29,
+  };
+  pressCombo = (combo) => {
+    let flags = 0n, key = -1;
+    for (const p of combo.toLowerCase().split("+")) {
+      if (p === "cmd" || p === "command" || p === "meta" || p === "super") flags |= 0x100000n;
+      else if (p === "shift") flags |= 0x20000n;
+      else if (p === "alt" || p === "option") flags |= 0x80000n;
+      else if (p === "ctrl" || p === "control") flags |= 0x40000n;
+      else if (p in KC) key = KC[p];
+    }
+    if (key < 0) return;
+    const d = cg.symbols.CGEventCreateKeyboardEvent(src, key, true);
+    cg.symbols.CGEventSetFlags(d, flags); post(d);
+    const up = cg.symbols.CGEventCreateKeyboardEvent(src, key, false);
+    cg.symbols.CGEventSetFlags(up, flags); post(up);
+  };
+  capturePng = async () => {
+    // screencapture is the simplest reliable path on macOS; downscale to points.
     const raw = await Deno.makeTempFile({ suffix: ".png" });
+    const out = await Deno.makeTempFile({ suffix: ".png" });
     await new Deno.Command("screencapture", { args: ["-x", "-t", "png", raw] }).output();
-    await new Deno.Command("sips", {
-      args: ["-z", String(SCREEN_H), String(SCREEN_W), raw, "--out", out],
-    }).output();
+    await new Deno.Command("sips", { args: ["-z", String(SCREEN_H), String(SCREEN_W), raw, "--out", out] }).output();
+    const bytes = await Deno.readFile(out);
     await Deno.remove(raw).catch(() => {});
+    await Deno.remove(out).catch(() => {});
+    return bytes;
+  };
+}
+
+// Dispatcher kept so the tool definitions below stay unchanged.
+function ctl(cmd: string, ...args: string[]): void {
+  switch (cmd) {
+    case "move": moveMouse(+args[0], +args[1]); break;
+    case "click": clickMouse(+args[0], +args[1], false, false); break;
+    case "doubleclick": clickMouse(+args[0], +args[1], true, false); break;
+    case "rightclick": clickMouse(+args[0], +args[1], false, true); break;
+    case "scroll": scrollMouse(+args[0], +args[1]); break;
+    case "type": typeText(args[0]); break;
+    case "key": pressCombo(args[0]); break;
   }
-  const bytes = await Deno.readFile(out);
-  await Deno.remove(out).catch(() => {});
-  return encodeBase64(bytes);
+}
+
+async function screenshot(): Promise<string> {
+  return encodeBase64(await capturePng());
 }
 
 function img(b64: string) {
@@ -208,15 +371,8 @@ You have computer-use tools: screenshot, click, move, type, key, scroll, shell.
 - For coding questions, just answer directly without the computer unless asked to act.`;
 
 // ---------------------------------------------------------------------------
-// Agent + event fan-out to SSE clients
+// Agent
 // ---------------------------------------------------------------------------
-const clients = new Set<(e: unknown) => void>();
-function broadcast(ev: unknown) {
-  for (const send of clients) {
-    try { send(ev); } catch { /* ignore */ }
-  }
-}
-
 // Non-fatal: if codex auth fails (e.g. token needs re-login), the window and
 // UI still come up; the agent surfaces the error when you send a message.
 await refreshCodex().catch((e) =>
@@ -226,173 +382,89 @@ const agent = new Agent({ getApiKey: async () => await codexApiKey() });
 agent.setModel(getModel("openai-codex", MODEL_ID as never));
 agent.setSystemPrompt(SYSTEM);
 agent.setTools(tools as never);
-agent.subscribe((e) => broadcast(e));
 
 // ---------------------------------------------------------------------------
-// HTTP: chat UI + SSE + prompt intake. Deno.serve auto-binds to the port the
-// webview navigates to in desktop mode.
+// UI shell — the Preact app (ui.tsx, bundled to ui.js) wrapped in HTML.
 // ---------------------------------------------------------------------------
-const indexHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Codex Desktop</title>
-<style>
+const STYLES = `
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
-         background: #0d0d12; color: #e8e8ee; height: 100vh; display: flex; flex-direction: column; }
-  header { padding: 10px 14px; background: #15151d; border-bottom: 1px solid #26263a;
-           display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  html, body, #root { height: 100%; margin: 0; }
+  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; background: #0d0d12; color: #e8e8ee; }
+  .app { height: 100%; display: flex; flex-direction: column; }
+  header { padding: 10px 14px; background: #15151d; border-bottom: 1px solid #26263a; display: flex; align-items: center; gap: 8px; font-weight: 600; }
   header .dot { width: 8px; height: 8px; border-radius: 50%; background: #f43f5e; }
   header .dot.on { background: #22c55e; }
   header small { font-weight: 400; color: #8a8aa0; margin-left: auto; }
-  #log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
   .msg { max-width: 92%; padding: 9px 12px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; }
   .user { align-self: flex-end; background: #4f46e5; }
   .assistant { align-self: flex-start; background: #1c1c28; }
-  .tool { align-self: flex-start; background: #14141e; border: 1px solid #2a2a3e; color: #b9b9d0;
-          font-family: ui-monospace, monospace; font-size: 12px; border-radius: 8px; }
+  .tool { align-self: flex-start; background: #14141e; border: 1px solid #2a2a3e; color: #b9b9d0; font-family: ui-monospace, monospace; font-size: 12px; border-radius: 8px; }
   .tool b { color: #818cf8; }
   .shot { align-self: flex-start; max-width: 92%; }
   .shot img { width: 100%; border-radius: 8px; border: 1px solid #2a2a3e; display: block; }
   form { display: flex; gap: 8px; padding: 10px; background: #15151d; border-top: 1px solid #26263a; }
-  textarea { flex: 1; resize: none; background: #0d0d12; color: #e8e8ee; border: 1px solid #2a2a3e;
-             border-radius: 10px; padding: 9px 11px; font: inherit; height: 42px; }
+  textarea { flex: 1; resize: none; background: #0d0d12; color: #e8e8ee; border: 1px solid #2a2a3e; border-radius: 10px; padding: 9px 11px; font: inherit; height: 42px; }
   button { background: #4f46e5; color: #fff; border: 0; border-radius: 10px; padding: 0 16px; cursor: pointer; font-weight: 600; }
   button:disabled { opacity: .5; cursor: default; }
-</style>
-</head>
-<body>
-  <header><span class="dot" id="dot"></span> Codex Desktop <small id="meta">connecting…</small></header>
-  <div id="log"></div>
-  <form id="f">
-    <textarea id="i" placeholder="Ask, or tell it to do something on your Mac…" autofocus></textarea>
-    <button id="send">Send</button>
-  </form>
-
-<script>
-const log = document.getElementById("log");
-const meta = document.getElementById("meta");
-const dot = document.getElementById("dot");
-const form = document.getElementById("f");
-const input = document.getElementById("i");
-
-let cur = null; // current assistant bubble being streamed
-const seenTools = new Set();
-
-function el(cls, html) { const d = document.createElement("div"); d.className = cls; if (html != null) d.innerHTML = html; log.appendChild(d); log.scrollTop = log.scrollHeight; return d; }
-function esc(s) { return (s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
-
-// Render the content blocks of an assistant message: text + tool calls + screenshots.
-function renderAssistant(message) {
-  let text = "";
-  for (const b of (message.content || [])) {
-    if (b.type === "text") text += b.text;
-    else if (b.type === "toolCall" || b.type === "tool_use") {
-      const id = b.id || b.toolCallId || JSON.stringify(b.arguments || b.input);
-      if (!seenTools.has("call:" + id)) {
-        seenTools.add("call:" + id);
-        const name = b.name || b.toolName;
-        const args = JSON.stringify(b.arguments ?? b.input ?? {});
-        el("msg tool", \`🔧 <b>\${esc(name)}</b> \${esc(args)}\`);
-      }
-    }
-  }
-  if (text) {
-    if (!cur) cur = el("msg assistant", "");
-    cur.textContent = text;
-    log.scrollTop = log.scrollHeight;
-  }
-}
-
-// Tool results may carry screenshots (image blocks) — render them.
-function renderToolResults(results) {
-  for (const r of (results || [])) {
-    const id = r.toolCallId || r.id;
-    for (const b of (r.content || [])) {
-      if (b.type === "image" && b.data) {
-        if (seenTools.has("img:" + id + (b.data.length))) continue;
-        seenTools.add("img:" + id + (b.data.length));
-        const wrap = el("shot");
-        const im = document.createElement("img");
-        im.src = "data:" + (b.mimeType || "image/png") + ";base64," + b.data;
-        wrap.appendChild(im);
-        log.scrollTop = log.scrollHeight;
-      }
-    }
-  }
-}
-
-const ev = new EventSource("/events");
-ev.onopen = () => { dot.classList.add("on"); };
-ev.onerror = () => { dot.classList.remove("on"); };
-ev.onmessage = (e) => {
-  const m = JSON.parse(e.data);
-  switch (m.type) {
-    case "hello": meta.textContent = m.model + " · " + m.screen.join("×"); break;
-    case "turn_start": cur = null; break;
-    case "message_start": cur = null; if (m.message) renderAssistant(m.message); break;
-    case "message_update": if (m.message) renderAssistant(m.message); break;
-    case "message_end": if (m.message) renderAssistant(m.message); cur = null; break;
-    case "turn_end": if (m.message) renderAssistant(m.message); renderToolResults(m.toolResults); cur = null; break;
-    case "agent_end": cur = null; setBusy(false); break;
-    case "error": el("msg tool", "⚠️ " + esc(m.message)); setBusy(false); break;
-  }
-};
-
-function setBusy(b) { document.getElementById("send").disabled = b; }
-
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const text = input.value.trim();
-  if (!text) return;
-  el("msg user").textContent = text;
-  input.value = ""; cur = null; setBusy(true);
-  await fetch("/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: text }) });
-});
-input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
-</script>
-</body>
-</html>
 `;
+const UI_JS = await Deno.readTextFile(new URL("./ui.js", import.meta.url));
+const HTML =
+  `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
+  `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+  `<title>Codex Desktop</title><style>${STYLES}</style></head>` +
+  `<body><div id="root"></div><script type="module">${UI_JS}</script></body></html>`;
 
-const server = Deno.serve(async (req) => {
-  const url = new URL(req.url);
-  if (url.pathname === "/") {
-    return new Response(indexHtml, { headers: { "content-type": "text/html" } });
-  }
-  if (url.pathname === "/events") {
-    const stream = new ReadableStream({
-      start(controller) {
-        const send = (e: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
-        clients.add(send);
-        send({ type: "hello", model: MODEL_ID, screen: [SCREEN_W, SCREEN_H] });
-        req.signal.addEventListener("abort", () => { clients.delete(send); try { controller.close(); } catch { /**/ } });
-      },
-    });
-    return new Response(stream, {
-      headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
-    });
-  }
-  if (url.pathname === "/chat" && req.method === "POST") {
-    const { message } = await req.json();
-    // fire-and-forget; events stream over SSE
-    agent.prompt(String(message)).catch((e) => broadcast({ type: "error", message: String(e?.message ?? e) }));
-    return new Response("ok");
-  }
-  return new Response("not found", { status: 404 });
-});
-
-const addr = `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`;
-console.log(`codex-demo on ${addr}  (model ${MODEL_ID}, screen ${SCREEN_W}x${SCREEN_H})`);
-
-// Desktop mode: open a native CEF window. Plain mode: just print the URL.
+// ---------------------------------------------------------------------------
+// Transport: BrowserWindow bindings in desktop mode (no web server),
+// SSE + fetch in the browser.
+// ---------------------------------------------------------------------------
+let emit: (ev: unknown) => void = () => {};
 // deno-lint-ignore no-explicit-any
 const DenoAny = Deno as any;
+
 if (DenoAny.BrowserWindow) {
-  const win = new DenoAny.BrowserWindow({ title: "Codex Desktop", width: 480, height: 720 });
-  win.navigate(addr);
+  const win = new DenoAny.BrowserWindow({ title: "Codex Desktop", width: 480, height: 760 });
+  win.bind("hello", () => Promise.resolve(JSON.stringify({ model: MODEL_ID, screen: [SCREEN_W, SCREEN_H] })));
+  // deno-lint-ignore no-explicit-any
+  win.bind("sendMessage", (text: string) => {
+    agent.prompt(String(text)).catch((e: any) => emit({ type: "error", message: String(e?.message ?? e) }));
+    return Promise.resolve(null);
+  });
+  emit = (ev) => { win.executeJs(`window.__ev && window.__ev(${JSON.stringify(JSON.stringify(ev))})`).catch(() => {}); };
   win.addEventListener("close", () => Deno.exit(0));
+  // The desktop runtime navigates the webview to the Deno.serve address, so we
+  // serve only the page here; all realtime RPC (sendMessage + events) rides the
+  // bindings above — no SSE, no fetch round-trips.
+  Deno.serve(() => new Response(HTML, { headers: { "content-type": "text/html" } }));
+  console.log(`codex-demo desktop  (model ${MODEL_ID}, screen ${SCREEN_W}x${SCREEN_H})`);
+} else {
+  const clients = new Set<(e: unknown) => void>();
+  emit = (ev) => { for (const s of clients) { try { s(ev); } catch { /* ignore */ } } };
+  const server = Deno.serve((req) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/") return new Response(HTML, { headers: { "content-type": "text/html" } });
+    if (url.pathname === "/events") {
+      const stream = new ReadableStream({
+        start(controller) {
+          const send = (e: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
+          clients.add(send);
+          send({ type: "hello", model: MODEL_ID, screen: [SCREEN_W, SCREEN_H] });
+          req.signal.addEventListener("abort", () => { clients.delete(send); try { controller.close(); } catch { /* ignore */ } });
+        },
+      });
+      return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" } });
+    }
+    if (url.pathname === "/chat" && req.method === "POST") {
+      return req.json().then(({ message }: { message: string }) => {
+        agent.prompt(String(message)).catch((e) => emit({ type: "error", message: String(e?.message ?? e) }));
+        return new Response("ok");
+      });
+    }
+    return new Response("not found", { status: 404 });
+  });
+  console.log(`codex-demo on http://127.0.0.1:${(server.addr as Deno.NetAddr).port}  (model ${MODEL_ID}, screen ${SCREEN_W}x${SCREEN_H})`);
 }
+
+agent.subscribe((e) => emit(e));

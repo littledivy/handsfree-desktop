@@ -1,43 +1,41 @@
 # Codex Desktop
 
-A Codex-like desktop app: a chat UI plus **hands-free computer use** (the agent
-sees the screen and drives the mouse/keyboard). Runs as a native desktop app via
-`deno desktop` (CEF window), or as a plain `deno run` server you open in a browser.
+A Codex-like desktop app: a Preact chat UI plus **hands-free computer use** (the
+agent sees the screen and drives the mouse/keyboard). Native desktop app via
+`deno desktop` (CEF window), or a plain `deno run` server you open in a browser.
 
 - **Brain:** OpenAI Codex via [`@mariozechner/pi-ai`](https://www.npmjs.com/package/@mariozechner/pi-ai) OAuth, using your `~/.codex/auth.json`.
 - **Loop:** [`@mariozechner/pi-agent-core`](https://www.npmjs.com/package/@mariozechner/pi-agent-core).
-- **Computer use:** native helper — `macctl` (macOS, CGEvent) / `winctl.exe` (Windows, SendInput + GDI).
-- **App:** single self-contained `main.ts` (UI inlined), cross-platform.
+- **Computer use:** **Deno FFI** — CoreGraphics (macOS) / user32 + gdi32 (Windows). No native helper binary.
+- **UI:** Preact + JSX (`ui.tsx`).
 
 ## Layout
-- `main.ts` — the whole app (agent loop, tools, server + SSE, inlined chat UI).
-- `macctl.swift` — macOS input/capture helper source.
-- `winctl.cs` — Windows input/capture helper source.
-- `deno.json` — deps + tasks.
+- `main.ts` — agent loop, computer-use tools (FFI), transport, codex auth.
+- `ui.tsx` — the Preact chat UI. Bundled to `ui.js` with `deno task ui`.
+- `bundle-ui.ts` — bundles `ui.tsx` → `ui.js` (via `jsr:@deno/emit`).
 
-## Build the native helper
-```sh
-# macOS
-swiftc -O macctl.swift -o macctl
-# Windows (.NET Framework csc)
-csc.exe /target:exe /out:winctl.exe /r:System.Drawing.dll /r:System.Windows.Forms.dll winctl.cs
-```
+## Transport (no polling)
+- **Desktop:** the UI talks to the Deno runtime over **`Deno.BrowserWindow` bindings** —
+  `bindings.sendMessage()` in, `executeJs(window.__ev(...))` out. No SSE, no fetch.
+  (A one-route `Deno.serve` still hands the CEF webview its HTML, because the desktop
+  runtime navigates the window to the serve address — but all RPC rides the bindings.)
+- **Browser dev:** falls back to SSE (`/events`) + `fetch('/chat')`.
 
 ## Run
 ```sh
-# dev: plain server + browser (fast iteration)
-deno run -A main.ts            # open the printed http://127.0.0.1:<port>
+deno task ui                 # build ui.js from ui.tsx (commit-friendly)
+
+deno run -A main.ts          # dev: open the printed http://127.0.0.1:<port>
 
 # native desktop app (deno desktop PR #33441 build):
-deno desktop -A --include winctl.exe -o CodexDesktop main.ts   # Windows
-deno desktop -A --include macctl    -o CodexDesktop.app main.ts # macOS
+deno desktop -A --include ui.js -o CodexDesktop.app main.ts   # macOS
+deno desktop -A --include ui.js -o CodexDesktop     main.ts   # Windows
 ```
 
 Needs a logged-in `~/.codex/auth.json` (run `codex login` if the brain says auth deferred).
-`CODEX_MODEL` env overrides the model (default `gpt-5.4`).
+`CODEX_MODEL` env overrides the model (default `gpt-5.4`). FFI is covered by `-A`.
 
 ## Notes
 - Computer use needs Accessibility + Screen Recording permission (macOS) / an
   interactive desktop session (Windows). The agent screenshots first, then acts;
   coordinates are in screenshot-pixel space.
-- `winctl openurl <url>` opens a URL reliably in one process (Win+R → type → Enter).
