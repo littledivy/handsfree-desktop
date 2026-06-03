@@ -1,10 +1,10 @@
-/** @jsxRuntime classic */
-/** @jsx h */
+/** @jsxImportSource preact */
 
 import { Agent } from "@mariozechner/pi-agent-core";
 import { getModel } from "@mariozechner/pi-ai";
 import { refreshOpenAICodexToken } from "@mariozechner/pi-ai/oauth";
 import { transpile } from "@deno/emit";
+import { render as renderToString } from "preact-render-to-string";
 import { z } from "zod";
 import { encodeBase64 } from "@std/encoding/base64";
 import type { ComputerUse } from "./macos.ts";
@@ -13,63 +13,6 @@ const HOME = (Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"))!;
 const MODEL_ID = Deno.env.get("CODEX_MODEL") ?? "gpt-5.4";
 const enc = new TextEncoder();
 const PREACT = "https://esm.sh/preact@10.27.2";
-
-class Html {
-  constructor(readonly value: string) {}
-}
-function raw(value: string): Html {
-  return new Html(value);
-}
-function escape(text: string): string {
-  return text.replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ]!,
-  );
-}
-type Child = Html | string | number | boolean | null | undefined | Child[];
-function renderChild(child: Child): string {
-  if (child == null || child === false || child === true) return "";
-  if (child instanceof Html) return child.value;
-  if (Array.isArray(child)) return child.map(renderChild).join("");
-  return escape(String(child));
-}
-const VOID_TAGS = new Set(["br", "hr", "img", "input", "meta", "link"]);
-function renderAttrs(props: Record<string, unknown> | null): string {
-  if (!props) return "";
-  let out = "";
-  for (const [key, value] of Object.entries(props)) {
-    if (key === "children" || value == null || value === false) continue;
-    const name = key === "className" ? "class" : key;
-    if (value === true) out += ` ${name}`;
-    else out += ` ${name}="${escape(String(value))}"`;
-  }
-  return out;
-}
-type Component = (props: Record<string, unknown>) => Html;
-function h(
-  tag: string | Component,
-  props: Record<string, unknown> | null,
-  ...children: Child[]
-): Html {
-  if (typeof tag === "function") return tag({ ...props, children });
-  const inner = children.map(renderChild).join("");
-  if (VOID_TAGS.has(tag)) return raw(`<${tag}${renderAttrs(props)}>`);
-  return raw(`<${tag}${renderAttrs(props)}>${inner}</${tag}>`);
-}
-declare global {
-  namespace JSX {
-    type Element = Html;
-    interface ElementChildrenAttribute {
-      children: Record<never, never>;
-    }
-    interface IntrinsicElements {
-      [tag: string]: Record<string, unknown>;
-    }
-  }
-}
 
 let codexToken = "";
 let codexExpiry = 0;
@@ -307,23 +250,23 @@ const uiJs = (await transpile(uiUrl, {
   compilerOptions: { jsx: "react-jsx", jsxImportSource: PREACT },
 })).get(uiUrl.href)!;
 
-function Page(): Html {
+function Page() {
   return (
     <html lang="en">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Codex Desktop</title>
-        <style>{raw(STYLES)}</style>
+        <style dangerouslySetInnerHTML={{ __html: STYLES }} />
       </head>
       <body>
         <div id="root"></div>
-        <script type="module">{raw(uiJs)}</script>
+        <script type="module" dangerouslySetInnerHTML={{ __html: uiJs }} />
       </body>
     </html>
   );
 }
-const HTML = "<!DOCTYPE html>" + renderChild(<Page />);
+const HTML = "<!DOCTYPE html>" + renderToString(<Page />);
 
 interface DesktopWindow {
   bind(name: string, fn: (...args: unknown[]) => Promise<unknown>): void;

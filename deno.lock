@@ -16,6 +16,8 @@
     "npm:@mariozechner/pi-ai@0.64.0": "0.64.0_zod@4.4.3",
     "npm:fast-png@*": "8.0.0",
     "npm:fast-png@8": "8.0.0",
+    "npm:preact-render-to-string@6": "6.6.7_preact@10.29.1",
+    "npm:preact@^10.27.2": "10.29.1",
     "npm:zod@4": "4.4.3"
   },
   "jsr": {
@@ -817,6 +819,15 @@
     "path-expression-matcher@1.5.0": {
       "integrity": "sha512-cbrerZV+6rvdQrrD+iGMcZFEiiSrbv9Tfdkvnusy6y0x0GKBXREFg/Y65GhIfm0tnLntThhzCnfKwp1WRjeCyQ=="
     },
+    "preact-render-to-string@6.6.7_preact@10.29.1": {
+      "integrity": "sha512-3XdbsX3+vn9dQW+jJI/FsI9rlkgl6dbeUpqLsChak6jp3j3auFqBCkno7VChbMFs5Q8ylBj6DrUkKRwtVN3nvw==",
+      "dependencies": [
+        "preact"
+      ]
+    },
+    "preact@10.29.1": {
+      "integrity": "sha512-gQCLc/vWroE8lIpleXtdJhTFDogTdZG9AjMUpVkDf2iTCNwYNWA+u16dL41TqUDJO4gm2IgrcMv3uTpjd4Pwmg=="
+    },
     "protobufjs@7.6.2": {
       "integrity": "sha512-N9EiLovGEQOJSPF26Ij7qUGvahfEnq0eeYZ02aigIedkmz1qZSwjnP9SBITHJuF/6MYbIW4HDN8zdYjsjqJKXQ==",
       "dependencies": [
@@ -922,6 +933,8 @@
       "npm:@mariozechner/pi-agent-core@0.64.0",
       "npm:@mariozechner/pi-ai@0.64.0",
       "npm:fast-png@8",
+      "npm:preact-render-to-string@6",
+      "npm:preact@^10.27.2",
       "npm:zod@4"
     ]
   }

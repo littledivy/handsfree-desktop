@@ -7,6 +7,8 @@
     "@mariozechner/pi-ai/oauth": "npm:/@mariozechner/pi-ai@0.64.0/oauth",
     "@std/encoding": "jsr:@std/encoding@^1",
     "fast-png": "npm:fast-png@^8",
+    "preact": "npm:preact@^10.27.2",
+    "preact-render-to-string": "npm:preact-render-to-string@^6",
     "zod": "npm:zod@^4"
   },
   "tasks": {
