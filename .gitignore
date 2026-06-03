@@ -1,0 +1,16 @@
+# built helper binaries (compile from the .swift / .cs sources)
+macctl
+winctl.exe
+*.pdb
+# deno desktop bundles / outputs
+*.app
+*.dmg
+CodexDesktop*
+*.dll
+# deps + scratch
+node_modules/
+*.png
+*.log
+run.txt
+applog.txt
+boot.*

@@ -1,0 +1,13 @@
+{
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@mariozechner/pi-ai": "npm:@mariozechner/pi-ai@0.64.0",
+    "@mariozechner/pi-agent-core": "npm:@mariozechner/pi-agent-core@0.64.0",
+    "@mariozechner/pi-ai/oauth": "npm:/@mariozechner/pi-ai@0.64.0/oauth",
+    "@sinclair/typebox": "npm:@sinclair/typebox@0.34.33"
+  },
+  "tasks": {
+    "dev": "deno run -A --watch main.ts",
+    "start": "deno run -A main.ts"
+  }
+}
