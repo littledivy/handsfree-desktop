@@ -5,12 +5,14 @@
     "@mariozechner/pi-agent-core": "npm:@mariozechner/pi-agent-core@0.64.0",
     "@mariozechner/pi-ai/oauth": "npm:/@mariozechner/pi-ai@0.64.0/oauth",
     "@std/encoding": "jsr:@std/encoding@^1",
+    "@twind/core": "npm:@twind/core@^1",
+    "@twind/preset-autoprefix": "npm:@twind/preset-autoprefix@^1",
+    "@twind/preset-tailwind": "npm:@twind/preset-tailwind@^1",
     "fast-png": "npm:fast-png@^8",
     "nano-jsx": "npm:nano-jsx@^0.2.1",
     "zod": "npm:zod@^4"
   },
   "tasks": {
-    "dev": "deno run -A --watch src/main.ts",
-    "start": "deno run -A src/main.ts"
+    "dev": "deno desktop --hmr -A src/main.ts"
   }
 }

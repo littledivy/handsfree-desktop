@@ -11,8 +11,8 @@ sees the screen and drives the mouse/keyboard). Native desktop app via
   [`@mariozechner/pi-agent-core`](https://www.npmjs.com/package/@mariozechner/pi-agent-core).
 - **Computer use:** **Deno FFI** — CoreGraphics (macOS) / user32 + gdi32
   (Windows). No native helper binary.
-- **UI:** server-side JSX (nano-jsx), **no client framework, no bundler, no
-  transpile step**.
+- **UI:** server-side JSX (nano-jsx) styled with twind (`tw`), **no client
+  JavaScript, no bundler, no transpile step**.
 
 ## Layout
 
@@ -26,38 +26,40 @@ src/
     macos.ts       CoreGraphics + screencapture
     win32.ts       user32 SendInput + gdi32 BitBlt
   chat.ts          server-side chat state + agent-event reducer
-  view.tsx         nano-jsx server rendering (page shell + message log)
-  transport.ts     desktop (BrowserWindow) and browser (Deno.serve) transports
+  view.tsx         nano-jsx + twind server rendering (page shell + message log)
+  transport.ts     BrowserWindow: drives the DOM from the server, no client JS
 ```
 
 Both computer-use backends implement one `ComputerUse` interface;
 `computer/mod.ts` imports the matching one at runtime per `Deno.build.os` — the
 other never loads.
 
-## All server-side rendered
+## No client code
 
-The whole UI is JSX rendered to HTML **on the server** with `nano-jsx` — Deno
-transpiles the JSX natively, so there is no client framework, no bundler, and no
-transpile step. State lives in `chat.ts`; on every agent event the server
-re-renders the message log and pushes the HTML to the page (`executeJs` on
-desktop, SSE in the browser). The only client code is a tiny inline bridge:
-relay the input box to `bindings.sendMessage` and swap `#log`'s `innerHTML`.
+The whole UI is JSX rendered to HTML **on the server** with `nano-jsx`, styled
+with twind's `tw` tagged template (CSS extracted at render — no hand-written
+stylesheet). The page ships **zero JavaScript**. Everything is driven from the
+Deno side over the desktop window:
 
-## Transport — no web server (desktop)
+- **Input:** the server listens for the window's `keydown` / `click` events; on
+  Enter or a Send-button hit (`document.elementFromPoint`) it reads and clears
+  the textarea with `executeJs`.
+- **Output:** on each agent event the server re-renders the message log
+  (`chat.ts` holds the state) and writes it into `#log` with `executeJs`.
 
-- **Desktop:** the page is loaded as a `data:` URL (no `Deno.serve`); updates
-  ride `BrowserWindow.executeJs(window.__render(...))`. (The desktop runtime
-  force-navigates the window to its unused serve address ~15s in, so the app
-  re-asserts its `data:` URL once past that; a ref'd timer keeps the runtime
-  alive.)
-- **Browser dev (`deno run`):** a small `Deno.serve` (page + SSE + `/chat`).
+## Desktop
+
+The page loads as a `data:` URL (no web server). The desktop runtime
+force-navigates the window to its unused serve address ~15s in, so the app
+re-asserts its `data:` URL once past that; a ref'd timer keeps the runtime
+alive.
 
 ## Run
 
 ```sh
-deno task start              # or: deno run -A src/main.ts — open the printed http://127.0.0.1:<port>
+deno task dev                # deno desktop --hmr — live reload
 
-# native desktop app (deno desktop PR #33441 build):
+# build a native desktop app (deno desktop PR #33441 build):
 deno desktop -A -o Handsfree.app src/main.ts   # macOS
 deno desktop -A -o Handsfree     src/main.ts   # Windows
 ```

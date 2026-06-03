@@ -9,15 +9,19 @@ export interface AppInfo {
   html: string;
 }
 
-interface View {
-  log: string;
-  busy: boolean;
+interface KeyEvent {
+  key: string;
+  shiftKey: boolean;
 }
-
+interface MouseEvent {
+  clientX: number;
+  clientY: number;
+}
 interface DesktopWindow {
-  bind(name: string, fn: (...args: unknown[]) => Promise<unknown>): void;
   executeJs(code: string): Promise<unknown>;
   navigate(url: string): void;
+  addEventListener(type: "keydown", fn: (e: KeyEvent) => void): void;
+  addEventListener(type: "click", fn: (e: MouseEvent) => void): void;
   addEventListener(type: "close", fn: () => void): void;
 }
 type DesktopWindowCtor = new (
@@ -25,36 +29,58 @@ type DesktopWindowCtor = new (
 ) => DesktopWindow;
 
 const enc = new TextEncoder();
-const view = (chat: Chat): View => ({
-  log: renderLog(chat.items),
-  busy: chat.busy,
-});
 const errorOf = (e: unknown) => String((e as Error)?.message ?? e);
 
-export function startTransport(app: AppInfo): void {
-  const ctor =
+export function startTransport({ agent, chat, html }: AppInfo): void {
+  const Ctor =
     (Deno as unknown as { BrowserWindow?: DesktopWindowCtor }).BrowserWindow;
-  if (ctor) startDesktop(ctor, app);
-  else startBrowser(app);
-}
+  if (!Ctor) throw new Error("Handsfree must run under `deno desktop`.");
 
-function startDesktop(Ctor: DesktopWindowCtor, { agent, chat, html }: AppInfo) {
   const win = new Ctor({ title: "Handsfree", width: 480, height: 760 });
-  const push = () =>
-    win.executeJs(`window.__render(${JSON.stringify(view(chat))})`).catch(
-      () => {},
-    );
+
+  const render = () =>
+    win.executeJs(
+      `(() => {
+        const log = document.getElementById("log");
+        if (!log) return;
+        log.innerHTML = ${JSON.stringify(renderLog(chat.items))};
+        const send = document.getElementById("send");
+        if (send) send.disabled = ${chat.busy};
+        log.scrollTop = log.scrollHeight;
+      })()`,
+    ).catch(() => {});
+
+  let sending = false;
+  const submit = async () => {
+    if (sending) return;
+    sending = true;
+    try {
+      const raw = await win.executeJs(
+        `(() => { const d = document.getElementById("draft"); if (!d) return ""; const v = d.value; d.value = ""; return v; })()`,
+      );
+      const text = String(raw ?? "").trim();
+      if (!text) return;
+      chat.pushUser(text);
+      render();
+      agent.prompt(text).catch((e) => {
+        if (chat.apply({ type: "error", message: errorOf(e) })) render();
+      });
+    } finally {
+      sending = false;
+    }
+  };
 
   agent.subscribe((ev) => {
-    if (chat.apply(ev)) push();
+    if (chat.apply(ev)) render();
   });
-  win.bind("sendMessage", (text) => {
-    chat.pushUser(String(text));
-    push();
-    agent.prompt(String(text)).catch((e) => {
-      if (chat.apply({ type: "error", message: errorOf(e) })) push();
-    });
-    return Promise.resolve(null);
+  win.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) submit();
+  });
+  win.addEventListener("click", async (e) => {
+    const onSend = await win.executeJs(
+      `document.elementFromPoint(${e.clientX}, ${e.clientY})?.id === "send"`,
+    );
+    if (onSend === true) submit();
   });
 
   const keepAlive = setInterval(() => {}, 1 << 30);
@@ -68,67 +94,4 @@ function startDesktop(Ctor: DesktopWindowCtor, { agent, chat, html }: AppInfo) {
   win.navigate(page);
   setTimeout(() => win.navigate(page), 15_500);
   console.log("handsfree desktop");
-}
-
-function startBrowser({ agent, chat, html }: AppInfo) {
-  const clients = new Set<(v: View) => void>();
-  const push = () => {
-    const v = view(chat);
-    for (const c of clients) {
-      try {
-        c(v);
-      } catch {
-        clients.delete(c);
-      }
-    }
-  };
-  agent.subscribe((ev) => {
-    if (chat.apply(ev)) push();
-  });
-
-  const server = Deno.serve((req) => {
-    const url = new URL(req.url);
-    if (url.pathname === "/") {
-      return new Response(html, { headers: { "content-type": "text/html" } });
-    }
-    if (url.pathname === "/events") {
-      const stream = new ReadableStream({
-        start(controller) {
-          const send = (v: View) =>
-            controller.enqueue(enc.encode(`data: ${JSON.stringify(v)}\n\n`));
-          clients.add(send);
-          send(view(chat));
-          req.signal.addEventListener("abort", () => {
-            clients.delete(send);
-            try {
-              controller.close();
-            } catch {
-              void 0;
-            }
-          });
-        },
-      });
-      return new Response(stream, {
-        headers: {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-        },
-      });
-    }
-    if (url.pathname === "/chat" && req.method === "POST") {
-      return req.json().then(({ message }: { message: string }) => {
-        chat.pushUser(String(message));
-        push();
-        agent.prompt(String(message)).catch((e) => {
-          if (chat.apply({ type: "error", message: errorOf(e) })) push();
-        });
-        return new Response("ok");
-      });
-    }
-    return new Response("not found", { status: 404 });
-  });
-  console.log(
-    `handsfree on http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`,
-  );
 }
