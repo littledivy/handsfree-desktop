@@ -1,11 +1,17 @@
 import type { Agent } from "@mariozechner/pi-agent-core";
 import { encodeBase64 } from "@std/encoding/base64";
+import { Chat } from "./chat.ts";
+import { renderLog } from "./view.tsx";
 
 export interface AppInfo {
   agent: Agent;
+  chat: Chat;
   html: string;
-  model: string;
-  screen: [number, number];
+}
+
+interface View {
+  log: string;
+  busy: boolean;
 }
 
 interface DesktopWindow {
@@ -19,10 +25,11 @@ type DesktopWindowCtor = new (
 ) => DesktopWindow;
 
 const enc = new TextEncoder();
-const errorEvent = (e: unknown) => ({
-  type: "error",
-  message: String((e as Error)?.message ?? e),
+const view = (chat: Chat): View => ({
+  log: renderLog(chat.items),
+  busy: chat.busy,
 });
+const errorOf = (e: unknown) => String((e as Error)?.message ?? e);
 
 export function startTransport(app: AppInfo): void {
   const ctor =
@@ -31,19 +38,22 @@ export function startTransport(app: AppInfo): void {
   else startBrowser(app);
 }
 
-function startDesktop(Ctor: DesktopWindowCtor, app: AppInfo): void {
-  const { agent, html, model, screen } = app;
-  const win = new Ctor({ title: "Codex Desktop", width: 480, height: 760 });
+function startDesktop(Ctor: DesktopWindowCtor, { agent, chat, html }: AppInfo) {
+  const win = new Ctor({ title: "Handsfree", width: 480, height: 760 });
+  const push = () =>
+    win.executeJs(`window.__render(${JSON.stringify(view(chat))})`).catch(
+      () => {},
+    );
 
-  const pushToUi = (ev: unknown) =>
-    win.executeJs(
-      `window.__ev && window.__ev(${JSON.stringify(JSON.stringify(ev))})`,
-    ).catch(() => {});
-
-  agent.subscribe(pushToUi);
-  win.bind("hello", () => Promise.resolve(JSON.stringify({ model, screen })));
+  agent.subscribe((ev) => {
+    if (chat.apply(ev)) push();
+  });
   win.bind("sendMessage", (text) => {
-    agent.prompt(String(text)).catch((e) => pushToUi(errorEvent(e)));
+    chat.pushUser(String(text));
+    push();
+    agent.prompt(String(text)).catch((e) => {
+      if (chat.apply({ type: "error", message: errorOf(e) })) push();
+    });
     return Promise.resolve(null);
   });
 
@@ -57,24 +67,24 @@ function startDesktop(Ctor: DesktopWindowCtor, app: AppInfo): void {
     encodeBase64(enc.encode(html));
   win.navigate(page);
   setTimeout(() => win.navigate(page), 15_500);
-  console.log(
-    `codex-demo desktop  (model ${model}, screen ${screen.join("x")})`,
-  );
+  console.log("handsfree desktop");
 }
 
-function startBrowser(app: AppInfo): void {
-  const { agent, html, model, screen } = app;
-  const clients = new Set<(e: unknown) => void>();
-  const pushToUi = (ev: unknown) => {
-    for (const s of clients) {
+function startBrowser({ agent, chat, html }: AppInfo) {
+  const clients = new Set<(v: View) => void>();
+  const push = () => {
+    const v = view(chat);
+    for (const c of clients) {
       try {
-        s(ev);
+        c(v);
       } catch {
-        clients.delete(s);
+        clients.delete(c);
       }
     }
   };
-  agent.subscribe(pushToUi);
+  agent.subscribe((ev) => {
+    if (chat.apply(ev)) push();
+  });
 
   const server = Deno.serve((req) => {
     const url = new URL(req.url);
@@ -84,10 +94,10 @@ function startBrowser(app: AppInfo): void {
     if (url.pathname === "/events") {
       const stream = new ReadableStream({
         start(controller) {
-          const send = (e: unknown) =>
-            controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
+          const send = (v: View) =>
+            controller.enqueue(enc.encode(`data: ${JSON.stringify(v)}\n\n`));
           clients.add(send);
-          send({ type: "hello", model, screen });
+          send(view(chat));
           req.signal.addEventListener("abort", () => {
             clients.delete(send);
             try {
@@ -108,15 +118,17 @@ function startBrowser(app: AppInfo): void {
     }
     if (url.pathname === "/chat" && req.method === "POST") {
       return req.json().then(({ message }: { message: string }) => {
-        agent.prompt(String(message)).catch((e) => pushToUi(errorEvent(e)));
+        chat.pushUser(String(message));
+        push();
+        agent.prompt(String(message)).catch((e) => {
+          if (chat.apply({ type: "error", message: errorOf(e) })) push();
+        });
         return new Response("ok");
       });
     }
     return new Response("not found", { status: 404 });
   });
   console.log(
-    `codex-demo on http://127.0.0.1:${
-      (server.addr as Deno.NetAddr).port
-    }  (model ${model}, screen ${screen.join("x")})`,
+    `handsfree on http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`,
   );
 }

@@ -1,21 +1,16 @@
 {
   "nodeModulesDir": "auto",
   "imports": {
-    "@deno/emit": "jsr:@deno/emit@^0.46",
     "@mariozechner/pi-ai": "npm:@mariozechner/pi-ai@0.64.0",
     "@mariozechner/pi-agent-core": "npm:@mariozechner/pi-agent-core@0.64.0",
     "@mariozechner/pi-ai/oauth": "npm:/@mariozechner/pi-ai@0.64.0/oauth",
     "@std/encoding": "jsr:@std/encoding@^1",
     "fast-png": "npm:fast-png@^8",
-    "preact": "npm:preact@^10.27.2",
-    "preact-render-to-string": "npm:preact-render-to-string@^6",
+    "nano-jsx": "npm:nano-jsx@^0.2.1",
     "zod": "npm:zod@^4"
   },
   "tasks": {
     "dev": "deno run -A --watch src/main.ts",
     "start": "deno run -A src/main.ts"
-  },
-  "lint": {
-    "exclude": ["src/ui.tsx"]
   }
 }
