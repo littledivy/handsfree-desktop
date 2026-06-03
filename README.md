@@ -14,12 +14,13 @@ agent sees the screen and drives the mouse/keyboard). Native desktop app via
 - `ui.tsx` — the Preact chat UI. Bundled to `ui.js` with `deno task ui`.
 - `bundle-ui.ts` — bundles `ui.tsx` → `ui.js` (via `jsr:@deno/emit`).
 
-## Transport (no polling)
-- **Desktop:** the UI talks to the Deno runtime over **`Deno.BrowserWindow` bindings** —
-  `bindings.sendMessage()` in, `executeJs(window.__ev(...))` out. No SSE, no fetch.
-  (A one-route `Deno.serve` still hands the CEF webview its HTML, because the desktop
-  runtime navigates the window to the serve address — but all RPC rides the bindings.)
-- **Browser dev:** falls back to SSE (`/events`) + `fetch('/chat')`.
+## Transport — no web server (desktop)
+- **Desktop:** the page is **built in Deno and loaded as a `data:` URL** (no `Deno.serve`).
+  The UI talks to the runtime over **`Deno.BrowserWindow` bindings** — `bindings.sendMessage()`
+  in, `executeJs(window.__ev(...))` out. No HTTP, no SSE, no fetch.
+  (The desktop runtime force-navigates the window to its unused serve address ~15s in, so the
+  app re-asserts its `data:` URL once past that — a brief one-time flicker, no server involved.)
+- **Browser dev (`deno run`):** a small `Deno.serve` (page + SSE + `/chat`) so you can open it in a browser.
 
 ## Run
 ```sh

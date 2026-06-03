@@ -1,8 +1,9 @@
 // codex-demo — a Codex-like desktop app: chat UI + hands-free computer use.
 // Brain: OpenAI Codex (via pi-ai OAuth, using your ~/.codex creds).
 // Loop: @mariozechner/pi-agent-core. Computer use: Deno FFI (no helper binary).
-// UI: Preact (ui.tsx). Desktop (`deno desktop`) talks to the runtime via
-// BrowserWindow bindings; in the browser it falls back to SSE + fetch.
+// UI: Preact (ui.tsx). Desktop (`deno desktop`) loads the page as a data: URL
+// (no web server) and talks to the runtime via BrowserWindow bindings; in the
+// browser it falls back to a dev server (SSE + fetch).
 import { Agent } from "@mariozechner/pi-agent-core";
 import { getModel } from "@mariozechner/pi-ai";
 import { refreshOpenAICodexToken } from "@mariozechner/pi-ai/oauth";
@@ -424,6 +425,9 @@ let emit: (ev: unknown) => void = () => {};
 // deno-lint-ignore no-explicit-any
 const DenoAny = Deno as any;
 
+// Agent events fan out through `emit`, wired up by whichever branch runs below.
+agent.subscribe((e) => emit(e));
+
 if (DenoAny.BrowserWindow) {
   const win = new DenoAny.BrowserWindow({ title: "Codex Desktop", width: 480, height: 760 });
   win.bind("hello", () => Promise.resolve(JSON.stringify({ model: MODEL_ID, screen: [SCREEN_W, SCREEN_H] })));
@@ -434,11 +438,14 @@ if (DenoAny.BrowserWindow) {
   });
   emit = (ev) => { win.executeJs(`window.__ev && window.__ev(${JSON.stringify(JSON.stringify(ev))})`).catch(() => {}); };
   win.addEventListener("close", () => Deno.exit(0));
-  // The desktop runtime navigates the webview to the Deno.serve address, so we
-  // serve only the page here; all realtime RPC (sendMessage + events) rides the
-  // bindings above — no SSE, no fetch round-trips.
-  Deno.serve(() => new Response(HTML, { headers: { "content-type": "text/html" } }));
+  // No web server: the page is built here and loaded straight into the webview
+  // as a data: URL. The desktop runtime force-navigates the window to its
+  // (unused) serve address ~15s in, so re-assert ours once past that.
+  const page = "data:text/html;charset=utf-8;base64," + encodeBase64(enc.encode(HTML));
+  win.navigate(page);
+  setTimeout(() => win.navigate(page), 15_500);
   console.log(`codex-demo desktop  (model ${MODEL_ID}, screen ${SCREEN_W}x${SCREEN_H})`);
+  await new Promise<void>(() => {}); // keep the runtime + window alive
 } else {
   const clients = new Set<(e: unknown) => void>();
   emit = (ev) => { for (const s of clients) { try { s(ev); } catch { /* ignore */ } } };
@@ -466,5 +473,3 @@ if (DenoAny.BrowserWindow) {
   });
   console.log(`codex-demo on http://127.0.0.1:${(server.addr as Deno.NetAddr).port}  (model ${MODEL_ID}, screen ${SCREEN_W}x${SCREEN_H})`);
 }
-
-agent.subscribe((e) => emit(e));
