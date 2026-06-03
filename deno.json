@@ -12,10 +12,10 @@
     "zod": "npm:zod@^4"
   },
   "tasks": {
-    "dev": "deno run -A --watch main.tsx",
-    "start": "deno run -A main.tsx"
+    "dev": "deno run -A --watch src/main.ts",
+    "start": "deno run -A src/main.ts"
   },
   "lint": {
-    "exclude": ["ui.tsx"]
+    "exclude": ["src/ui.tsx"]
   }
 }

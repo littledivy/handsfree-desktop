@@ -10,18 +10,28 @@ agent sees the screen and drives the mouse/keyboard). Native desktop app via
 - **UI:** Preact + JSX (`ui.tsx`), **no bundler**.
 
 ## Layout
-- `main.tsx` — agent loop, tools (zod-validated), codex auth, transport.
-- `macos.ts` — macOS computer-use backend (CoreGraphics + `screencapture`).
-- `win32.ts` — Windows computer-use backend (user32 SendInput + gdi32 BitBlt).
-- `ui.tsx` — the Preact chat UI.
+```
+src/
+  main.ts          compose: auth → computer → agent → page → transport
+  codex.ts         codex OAuth token refresh
+  agent.ts         pi-agent-core agent + zod-validated computer-use tools
+  computer/
+    mod.ts         ComputerUse interface + runtime platform loader
+    macos.ts       CoreGraphics + screencapture
+    win32.ts       user32 SendInput + gdi32 BitBlt
+  page.tsx         transpile ui.tsx + render the shell (preact-render-to-string)
+  ui.tsx           the Preact chat UI
+  transport.ts     desktop (BrowserWindow) and browser (Deno.serve) transports
+```
 
-Both computer-use backends implement one `ComputerUse` interface; `main.tsx`
+Both computer-use backends implement one `ComputerUse` interface; `computer/mod.ts`
 imports the matching one at runtime per `Deno.build.os` — the other never loads.
 
 ## No bundler
 `ui.tsx` is **transpiled at runtime** (`jsr:@deno/emit`, TSX→JS, imports left
-external) and inlined into the page as a `<script type="module">`. The browser
-loads Preact straight from `esm.sh` — no bundle step, no `ui.js`.
+external) and inlined into the page as a `<script type="module">`. The shell is
+rendered with `preact-render-to-string`. The browser loads Preact straight from
+`esm.sh` — no bundle step, no `ui.js`.
 
 ## Transport — no web server (desktop)
 - **Desktop:** the page is **built in Deno and loaded as a `data:` URL** (no `Deno.serve`).
@@ -33,11 +43,11 @@ loads Preact straight from `esm.sh` — no bundle step, no `ui.js`.
 
 ## Run
 ```sh
-deno task start              # or: deno run -A main.tsx — open the printed http://127.0.0.1:<port>
+deno task start              # or: deno run -A src/main.ts — open the printed http://127.0.0.1:<port>
 
 # native desktop app (deno desktop PR #33441 build):
-deno desktop -A --include ui.tsx -o CodexDesktop.app main.tsx   # macOS
-deno desktop -A --include ui.tsx -o CodexDesktop     main.tsx   # Windows
+deno desktop -A --include src/ui.tsx -o CodexDesktop.app src/main.ts   # macOS
+deno desktop -A --include src/ui.tsx -o CodexDesktop     src/main.ts   # Windows
 ```
 
 Needs a logged-in `~/.codex/auth.json` (run `codex login` if the brain says auth deferred).

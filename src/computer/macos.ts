@@ -1,17 +1,4 @@
-export interface ComputerUse {
-  readonly screenW: number;
-  readonly screenH: number;
-  move(x: number, y: number): void;
-  click(
-    x: number,
-    y: number,
-    opts?: { double?: boolean; right?: boolean },
-  ): void;
-  scroll(dx: number, dy: number): void;
-  type(text: string): void;
-  key(combo: string): void;
-  capturePng(): Promise<Uint8Array>;
-}
+import type { ComputerUse } from "./mod.ts";
 
 export function createComputerUse(): ComputerUse {
   const cg = Deno.dlopen(

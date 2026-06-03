@@ -1,5 +1,5 @@
 import { encode as encodePng } from "fast-png";
-import type { ComputerUse } from "./macos.ts";
+import type { ComputerUse } from "./mod.ts";
 
 export function createComputerUse(): ComputerUse {
   const u = Deno.dlopen(
