@@ -18,7 +18,7 @@ sees the screen and drives the mouse/keyboard). Native desktop app via
 
 ```
 src/
-  main.ts          compose: auth → computer → agent → page → transport
+  main.ts          the app: BrowserWindow, server-driven input/output, wiring
   codex.ts         codex OAuth token refresh
   agent.ts         pi-agent-core agent + zod-validated computer-use tools
   computer/
@@ -27,7 +27,6 @@ src/
     win32.ts       user32 SendInput + gdi32 BitBlt
   chat.ts          server-side chat state + agent-event reducer
   view.tsx         nano-jsx + twind server rendering (page shell + message log)
-  transport.ts     BrowserWindow: drives the DOM from the server, no client JS
 ```
 
 Both computer-use backends implement one `ComputerUse` interface;
