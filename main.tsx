@@ -1,18 +1,10 @@
 /** @jsxRuntime classic */
 /** @jsx h */
 
-// codex-demo — a Codex-like desktop app: chat UI + hands-free computer use.
-// Brain: OpenAI Codex (via pi-ai OAuth, using your ~/.codex creds).
-// Loop: @mariozechner/pi-agent-core. Computer use: Deno FFI (macos.ts / win32.ts).
-//
-// The chat UI is rendered to an HTML string *server-side* from the JSX below —
-// no client framework, no bundler. The desktop window loads it as a `data:`
-// URL (no web server) and talks back over typed BrowserWindow bindings; a
-// plain `deno run` falls back to a dev server (SSE + fetch) for the browser.
-
 import { Agent } from "@mariozechner/pi-agent-core";
 import { getModel } from "@mariozechner/pi-ai";
 import { refreshOpenAICodexToken } from "@mariozechner/pi-ai/oauth";
+import { transpile } from "@deno/emit";
 import { z } from "zod";
 import { encodeBase64 } from "@std/encoding/base64";
 import type { ComputerUse } from "./macos.ts";
@@ -20,10 +12,7 @@ import type { ComputerUse } from "./macos.ts";
 const HOME = (Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"))!;
 const MODEL_ID = Deno.env.get("CODEX_MODEL") ?? "gpt-5.4";
 const enc = new TextEncoder();
-
-// ─── Server-side JSX ─────────────────────────────────────────────────────────
-// Tiny string renderer. `h` returns `Html` (pre-rendered markup); text children
-// are escaped, `raw()` children pass through verbatim.
+const PREACT = "https://esm.sh/preact@10.27.2";
 
 class Html {
   constructor(readonly value: string) {}
@@ -82,9 +71,6 @@ declare global {
   }
 }
 
-// ─── Codex auth ──────────────────────────────────────────────────────────────
-// Refresh the access token from ~/.codex/auth.json, keep it fresh.
-
 let codexToken = "";
 let codexExpiry = 0;
 function jwtExpMs(t: string): number {
@@ -97,8 +83,6 @@ function jwtExpMs(t: string): number {
 async function refreshCodex() {
   const path = `${HOME}/.codex/auth.json`;
   const cx = JSON.parse(await Deno.readTextFile(path));
-  // Prefer the stored access token while it's still valid — codex refresh
-  // tokens are single-use and may already be consumed elsewhere.
   const stored = cx.tokens?.access_token ?? "";
   const storedExp = jwtExpMs(stored);
   if (stored && storedExp > Date.now() + 60_000) {
@@ -122,9 +106,6 @@ async function codexApiKey() {
   return codexToken;
 }
 
-// ─── Computer use ────────────────────────────────────────────────────────────
-// Load the matching FFI backend at runtime — no bundling, the other never loads.
-
 const IS_WIN = Deno.build.os === "windows";
 const computer: ComputerUse =
   await (IS_WIN ? import("./win32.ts") : import("./macos.ts"))
@@ -142,13 +123,7 @@ function txt(s: string) {
 }
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// ─── Tools (zod-validated) ───────────────────────────────────────────────────
-// Each tool declares its parameters with a zod schema. The JSON Schema handed
-// to the model is derived from it, and incoming arguments are parsed/validated
-// against it before `run` sees them.
-
-// deno-lint-ignore no-explicit-any
-type ToolContent = { content: any[]; details: Record<string, unknown> };
+type ToolContent = { content: unknown[]; details: Record<string, unknown> };
 function tool<S extends z.ZodType>(def: {
   name: string;
   description: string;
@@ -285,10 +260,6 @@ You have computer-use tools: screenshot, click, move, type, key, scroll, shell.
 - Be careful and deliberate. Narrate what you're doing in short sentences.
 - For coding questions, just answer directly without the computer unless asked to act.`;
 
-// ─── Agent ───────────────────────────────────────────────────────────────────
-// Non-fatal: if codex auth fails (e.g. token needs re-login), the window and UI
-// still come up; the agent surfaces the error when you send a message.
-
 await refreshCodex().catch((e) =>
   console.error(
     "codex auth deferred — run `codex login` to restore:",
@@ -299,8 +270,6 @@ const agent = new Agent({ getApiKey: async () => await codexApiKey() });
 agent.setModel(getModel("openai-codex", MODEL_ID as never));
 agent.setSystemPrompt(SYSTEM);
 agent.setTools(tools as never);
-
-// ─── Page (server-rendered JSX) ──────────────────────────────────────────────
 
 const STYLES = `
   :root { color-scheme: dark; }
@@ -326,142 +295,17 @@ const STYLES = `
   button:disabled { opacity: .5; cursor: default; }
 `;
 
-// Client glue: plain DOM, no framework, no bundle. Interprets AgentEvents from
-// the runtime (over BrowserWindow bindings in desktop mode, SSE in the browser)
-// and appends chat bubbles. Mirrors the old Preact reducer.
-const CLIENT_JS = `
-const seen = new Set();
-const log = document.getElementById("log");
-const dotEl = document.getElementById("dot");
-const metaEl = document.getElementById("meta");
-const draftEl = document.getElementById("draft");
-const sendBtn = document.getElementById("send");
-const formEl = document.getElementById("form");
-
-const scrollDown = () => { log.scrollTop = log.scrollHeight; };
-const bubble = (cls, text) => {
-  const d = document.createElement("div");
-  d.className = cls;
-  if (text != null) d.textContent = text;
-  return d;
-};
-
-function addUser(text) { log.appendChild(bubble("msg user", text)); scrollDown(); }
-function addAssistant(text) {
-  const last = log.lastElementChild;
-  if (last && last.classList.contains("assistant")) last.textContent = text;
-  else log.appendChild(bubble("msg assistant", text));
-  scrollDown();
-}
-function addTool(id, name, args) {
-  if (seen.has("c" + id)) return;
-  seen.add("c" + id);
-  const d = bubble("msg tool");
-  const b = document.createElement("b");
-  b.textContent = name === "error" ? "⚠️" : "🔧 " + name;
-  d.appendChild(b);
-  d.appendChild(document.createTextNode(" " + args));
-  log.appendChild(d);
-  scrollDown();
-}
-function addShot(id, src) {
-  if (seen.has("s" + id)) return;
-  seen.add("s" + id);
-  const d = bubble("shot");
-  const im = document.createElement("img");
-  im.src = src;
-  d.appendChild(im);
-  log.appendChild(d);
-  scrollDown();
-}
-const setBusy = (b) => { sendBtn.disabled = b; };
-const setMeta = (t) => { metaEl.textContent = t; };
-const setConnected = (c) => { dotEl.classList.toggle("on", c); };
-
-function renderMsg(msg) {
-  let text = "";
-  for (const b of (msg && msg.content) || []) {
-    if (b.type === "text") text += b.text;
-    else if (b.type === "toolCall" || b.type === "tool_use") {
-      addTool(
-        String(b.id ?? b.toolCallId ?? JSON.stringify(b.arguments ?? b.input)),
-        b.name ?? b.toolName,
-        JSON.stringify(b.arguments ?? b.input ?? {}),
-      );
-    }
-  }
-  if (text) addAssistant(text);
-}
-function onEvent(m) {
-  switch (m.type) {
-    case "hello":
-      setMeta(m.model + " · " + m.screen.join("×"));
-      break;
-    case "message_start":
-    case "message_update":
-    case "message_end":
-      if (m.message) renderMsg(m.message);
-      break;
-    case "turn_end":
-      if (m.message) renderMsg(m.message);
-      for (const r of m.toolResults || []) {
-        for (const b of r.content || []) {
-          if (b.type === "image" && b.data) {
-            addShot(
-              (r.toolCallId ?? r.id ?? "") + b.data.length,
-              "data:" + (b.mimeType || "image/png") + ";base64," + b.data,
-            );
-          }
-        }
-      }
-      break;
-    case "agent_end":
-      setBusy(false);
-      break;
-    case "error":
-      addTool("err" + Math.random(), "error", m.message);
-      setBusy(false);
-      break;
-  }
-}
-
-let send = () => {};
-if (window.bindings) {
-  // Desktop: direct RPC over BrowserWindow bindings — no web server.
-  window.__ev = (s) => onEvent(JSON.parse(s));
-  setConnected(true);
-  window.bindings.hello().then((h) => {
-    const x = JSON.parse(h);
-    setMeta(x.model + " · " + x.screen.join("×"));
-  });
-  send = (t) => window.bindings.sendMessage(t);
-} else {
-  // Browser dev: SSE + fetch.
-  const es = new EventSource("/events");
-  es.onopen = () => setConnected(true);
-  es.onerror = () => setConnected(false);
-  es.onmessage = (e) => onEvent(JSON.parse(e.data));
-  send = (t) =>
-    fetch("/chat", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: t }),
-    });
-}
-
-function submit() {
-  const text = draftEl.value.trim();
-  if (!text) return;
-  addUser(text);
-  setBusy(true);
-  draftEl.value = "";
-  send(text);
-}
-formEl.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
-draftEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-});
-`;
+const uiUrl = new URL("./ui.tsx", import.meta.url);
+const uiSrc = await Deno.readTextFile(uiUrl);
+const uiJs = (await transpile(uiUrl, {
+  load: (spec) =>
+    Promise.resolve(
+      spec === uiUrl.href
+        ? { kind: "module", specifier: spec, content: uiSrc }
+        : { kind: "external", specifier: spec },
+    ),
+  compilerOptions: { jsx: "react-jsx", jsxImportSource: PREACT },
+})).get(uiUrl.href)!;
 
 function Page(): Html {
   return (
@@ -473,33 +317,13 @@ function Page(): Html {
         <style>{raw(STYLES)}</style>
       </head>
       <body>
-        <div class="app">
-          <header>
-            <span id="dot" class="dot"></span>
-            Codex Desktop
-            <small id="meta">connecting…</small>
-          </header>
-          <div class="log" id="log"></div>
-          <form id="form">
-            <textarea
-              id="draft"
-              placeholder="Ask, or tell it to do something on your machine…"
-            >
-            </textarea>
-            <button id="send" type="submit">Send</button>
-          </form>
-        </div>
-        <script>{raw(CLIENT_JS)}</script>
+        <div id="root"></div>
+        <script type="module">{raw(uiJs)}</script>
       </body>
     </html>
   );
 }
-
 const HTML = "<!DOCTYPE html>" + renderChild(<Page />);
-
-// ─── Transport ───────────────────────────────────────────────────────────────
-// Desktop: typed BrowserWindow bindings, page loaded as a data: URL (no server).
-// Browser dev (`deno run`): a small Deno.serve with SSE + /chat.
 
 interface DesktopWindow {
   bind(name: string, fn: (...args: unknown[]) => Promise<unknown>): void;
@@ -538,10 +362,11 @@ if (BrowserWindowCtor) {
       `window.__ev && window.__ev(${JSON.stringify(JSON.stringify(ev))})`,
     ).catch(() => {});
   };
-  win.addEventListener("close", () => Deno.exit(0));
-  // No web server: the page is loaded straight into the webview as a data: URL.
-  // The desktop runtime force-navigates the window to its (unused) serve address
-  // ~15s in, so re-assert ours once past that.
+  const keepAlive = setInterval(() => {}, 1 << 30);
+  win.addEventListener("close", () => {
+    clearInterval(keepAlive);
+    Deno.exit(0);
+  });
   const page = "data:text/html;charset=utf-8;base64," +
     encodeBase64(enc.encode(HTML));
   win.navigate(page);
@@ -549,14 +374,15 @@ if (BrowserWindowCtor) {
   console.log(
     `codex-demo desktop  (model ${MODEL_ID}, screen ${SCREEN_W}x${SCREEN_H})`,
   );
-  await new Promise<void>(() => {}); // keep the runtime + window alive
 } else {
   const clients = new Set<(e: unknown) => void>();
   emit = (ev) => {
     for (const s of clients) {
       try {
         s(ev);
-      } catch { /* ignore */ }
+      } catch {
+        clients.delete(s);
+      }
     }
   };
   const server = Deno.serve((req) => {
@@ -579,7 +405,9 @@ if (BrowserWindowCtor) {
             clients.delete(send);
             try {
               controller.close();
-            } catch { /* ignore */ }
+            } catch {
+              void 0;
+            }
           });
         },
       });

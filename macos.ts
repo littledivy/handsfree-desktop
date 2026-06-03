@@ -1,11 +1,3 @@
-// macOS computer-use backend via Deno FFI — no native helper binary.
-//   input:  CoreGraphics (CGEvent)
-//   vision: `screencapture` + `sips` (simplest reliable path; downscale to points)
-// Needs --allow-ffi / --allow-run (covered by -A).
-
-/** Platform computer-use surface. macOS and Windows implement this with native
- * FFI; the agent in `main.tsx` talks to it and never branches on the OS. All
- * coordinates are in screen-pixel space, top-left origin. */
 export interface ComputerUse {
   readonly screenW: number;
   readonly screenH: number;
@@ -17,9 +9,7 @@ export interface ComputerUse {
   ): void;
   scroll(dx: number, dy: number): void;
   type(text: string): void;
-  /** Press a key or combo, e.g. "return", "cmd+space", "cmd+shift+4". */
   key(combo: string): void;
-  /** PNG-encoded screenshot at screen-pixel resolution. */
   capturePng(): Promise<Uint8Array>;
 }
 
@@ -75,8 +65,6 @@ export function createComputerUse(): ComputerUse {
   const screenW = Number(cg.symbols.CGDisplayPixelsWide(dsp));
   const screenH = Number(cg.symbols.CGDisplayPixelsHigh(dsp));
 
-  // CGKeyCode table for the keys we name; single chars route through
-  // CGEventKeyboardSetUnicodeString in `type`, so only combos need codes.
   const KC: Record<string, number> = {
     return: 36,
     enter: 36,

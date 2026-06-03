@@ -1,8 +1,3 @@
-// Windows computer-use backend via Deno FFI — no native helper binary.
-//   input:  user32 SendInput / SetCursorPos
-//   vision: gdi32 BitBlt + GetDIBits, PNG-encoded with fast-png
-// Needs --allow-ffi (covered by -A).
-
 import { encode as encodePng } from "fast-png";
 import type { ComputerUse } from "./macos.ts";
 
@@ -68,7 +63,6 @@ export function createComputerUse(): ComputerUse {
     inputs.forEach((b, i) => buf.set(b, i * 40));
     u.symbols.SendInput(inputs.length, buf, 40);
   };
-  // INPUT struct (x64, 40 bytes): mouse variant.
   const mi = (dx: number, dy: number, data: number, flags: number) => {
     const b = new Uint8Array(40), v = new DataView(b.buffer);
     v.setUint32(0, 0, true);
@@ -78,7 +72,6 @@ export function createComputerUse(): ComputerUse {
     v.setUint32(20, flags >>> 0, true);
     return b;
   };
-  // INPUT struct: keyboard variant.
   const ki = (vk: number, scan: number, flags: number) => {
     const b = new Uint8Array(40), v = new DataView(b.buffer);
     v.setUint32(0, 1, true);
@@ -175,7 +168,7 @@ export function createComputerUse(): ComputerUse {
       const mem = g.symbols.CreateCompatibleDC(screen);
       const bmp = g.symbols.CreateCompatibleBitmap(screen, screenW, screenH);
       g.symbols.SelectObject(mem, bmp);
-      g.symbols.BitBlt(mem, 0, 0, screenW, screenH, screen, 0, 0, 0x00CC0020); // SRCCOPY
+      g.symbols.BitBlt(mem, 0, 0, screenW, screenH, screen, 0, 0, 0x00CC0020);
       const bmi = new Uint8Array(40), bv = new DataView(bmi.buffer);
       bv.setUint32(0, 40, true);
       bv.setInt32(4, screenW, true);
@@ -188,7 +181,6 @@ export function createComputerUse(): ComputerUse {
       g.symbols.DeleteObject(bmp);
       g.symbols.DeleteDC(mem);
       u.symbols.ReleaseDC(null, screen);
-      // BGRA → RGBA, force opaque alpha.
       for (let i = 0; i < bits.length; i += 4) {
         const b = bits[i];
         bits[i] = bits[i + 2];

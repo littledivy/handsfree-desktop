@@ -1,6 +1,7 @@
 {
   "nodeModulesDir": "auto",
   "imports": {
+    "@deno/emit": "jsr:@deno/emit@^0.46",
     "@mariozechner/pi-ai": "npm:@mariozechner/pi-ai@0.64.0",
     "@mariozechner/pi-agent-core": "npm:@mariozechner/pi-agent-core@0.64.0",
     "@mariozechner/pi-ai/oauth": "npm:/@mariozechner/pi-ai@0.64.0/oauth",
@@ -11,5 +12,8 @@
   "tasks": {
     "dev": "deno run -A --watch main.tsx",
     "start": "deno run -A main.tsx"
+  },
+  "lint": {
+    "exclude": ["ui.tsx"]
   }
 }
