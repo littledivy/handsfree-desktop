@@ -2,7 +2,7 @@
 
 A Codex-like desktop app: a chat UI plus **hands-free computer use** (the agent
 sees the screen and drives the mouse/keyboard). Native desktop app via
-`deno desktop` (CEF window), or a plain `deno run` server you open in a browser.
+`deno desktop` (CEF window).
 
 - **Brain:** OpenAI Codex via
   [`@mariozechner/pi-ai`](https://www.npmjs.com/package/@mariozechner/pi-ai)
@@ -32,26 +32,6 @@ src/
 Both computer-use backends implement one `ComputerUse` interface;
 `computer/mod.ts` imports the matching one at runtime per `Deno.build.os` — the
 other never loads.
-
-## No client code
-
-The whole UI is JSX rendered to HTML **on the server** with `nano-jsx`, styled
-with twind's `tw` tagged template (CSS extracted at render — no hand-written
-stylesheet). The page ships **zero JavaScript**. Everything is driven from the
-Deno side over the desktop window:
-
-- **Input:** the server listens for the window's `keydown` / `click` events; on
-  Enter or a Send-button hit (`document.elementFromPoint`) it reads and clears
-  the textarea with `executeJs`.
-- **Output:** on each agent event the server re-renders the message log
-  (`chat.ts` holds the state) and writes it into `#log` with `executeJs`.
-
-## Desktop
-
-The page loads as a `data:` URL (no web server). The desktop runtime
-force-navigates the window to its unused serve address ~15s in, so the app
-re-asserts its `data:` URL once past that; a ref'd timer keeps the runtime
-alive.
 
 ## Run
 
