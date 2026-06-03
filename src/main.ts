@@ -5,25 +5,6 @@ import { createAgent } from "./agent.ts";
 import { Chat } from "./chat.ts";
 import { renderLog, renderPage } from "./view.tsx";
 
-interface BrowserWindow {
-  executeJs(code: string): Promise<unknown>;
-  navigate(url: string): void;
-  addEventListener(
-    t: "keydown",
-    fn: (e: { key: string; shiftKey: boolean }) => void,
-  ): void;
-  addEventListener(
-    t: "click",
-    fn: (e: { clientX: number; clientY: number }) => void,
-  ): void;
-  addEventListener(t: "close", fn: () => void): void;
-}
-const BrowserWindow = (Deno as unknown as {
-  BrowserWindow: new (
-    o: { title?: string; width?: number; height?: number },
-  ) => BrowserWindow;
-}).BrowserWindow;
-
 const HOME = (Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"))!;
 const MODEL_ID = Deno.env.get("CODEX_MODEL") ?? "gpt-5.4";
 
@@ -45,7 +26,15 @@ const html = renderPage(
   `${MODEL_ID} · ${computer.screenW}×${computer.screenH}`,
 );
 
-const win = new BrowserWindow({ title: "Handsfree", width: 480, height: 760 });
+const win = new Deno.BrowserWindow({
+  title: "Handsfree",
+  width: 480,
+  height: 760,
+});
+
+// executeJs resolves to { ok, value } — unwrap the evaluated value.
+const evalJs = async (code: string): Promise<unknown> =>
+  ((await win.executeJs(code)) as { value?: unknown })?.value;
 
 const render = () =>
   win.executeJs(
@@ -64,7 +53,7 @@ const submit = async () => {
   if (sending) return;
   sending = true;
   try {
-    const raw = await win.executeJs(
+    const raw = await evalJs(
       `(() => { const d = document.getElementById("draft"); if (!d) return ""; const v = d.value; d.value = ""; return v; })()`,
     );
     const text = String(raw ?? "").trim();
@@ -93,7 +82,7 @@ win.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) submit();
 });
 win.addEventListener("click", async (e) => {
-  const hit = await win.executeJs(
+  const hit = await evalJs(
     `document.elementFromPoint(${e.clientX}, ${e.clientY})?.id === "send"`,
   );
   if (hit === true) submit();
